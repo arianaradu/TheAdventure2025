@@ -33,7 +33,7 @@ public class RenderableGameObject : GameObject
     private readonly int _height;
 
     public StaticGameObject(int textureId, int x, int y, int width, int height)
-        : base(null!, (x, y))  // null! is ugly, but we override everything
+        : base(null!, (x, y))
     {
         _textureId = textureId;
         _width = width;
@@ -46,5 +46,10 @@ public class RenderableGameObject : GameObject
         var dst = new Rectangle<int>(Position.X, Position.Y, _width, _height);
         renderer.RenderTexture(_textureId, src, dst);
     }
+
+    // 🔽 ADD THESE TWO PROPERTIES
+    public int Width => _width;
+    public int Height => _height;
 }
+
 

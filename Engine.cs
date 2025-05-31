@@ -13,6 +13,8 @@ public class Engine
     private readonly Dictionary<int, GameObject> _gameObjects = new();
     private readonly Dictionary<string, TileSet> _loadedTileSets = new();
     private readonly Dictionary<int, Tile> _tileIdMap = new();
+    private readonly List<StaticGameObject> _houses = new();
+    private readonly List<(int Id, DateTimeOffset ExpireTime)> _housesPendingRemoval = new(); // NEW
 
     private Level _currentLevel = new();
     private PlayerObject? _player;
@@ -31,7 +33,6 @@ public class Engine
     public void SetupWorld()
     {
         _player = new PlayerObject(SpriteSheet.Load(_renderer, "Player.json", "Assets"), 100, 100);
-
         _dog = new DogCompanion(_player, SpriteSheet.Load(_renderer, "Dog.json", "Assets"));
 
         var levelContent = File.ReadAllText(Path.Combine("Assets", "terrain.tmj"));
@@ -89,7 +90,6 @@ public class Engine
         double right = _input.IsRightPressed() ? 1.0 : 0.0;
 
         _player?.UpdatePosition(up, down, left, right, 48, 48, msSinceLastFrame);
-
         _dog?.Update();
     }
 
@@ -107,7 +107,7 @@ public class Engine
         _renderer.PresentFrame();
     }
 
-    public void RenderAllObjects()
+    private void RenderAllObjects()
     {
         var toRemove = new List<int>();
         foreach (var gameObject in GetRenderables())
@@ -124,12 +124,24 @@ public class Engine
             _gameObjects.Remove(id);
         }
 
-        _dog?.Render(_renderer);
+        // 🔥 Delayed house removal
+        var now = DateTimeOffset.Now;
+        var expiredHouses = _housesPendingRemoval.Where(h => now >= h.ExpireTime).ToList();
+        foreach (var (id, _) in expiredHouses)
+        {
+            if (_gameObjects.TryGetValue(id, out var obj) && obj is StaticGameObject house)
+            {
+                _gameObjects.Remove(id);
+                _houses.Remove(house);
+            }
+        }
+        _housesPendingRemoval.RemoveAll(h => now >= h.ExpireTime);
 
+        _dog?.Render(_renderer);
         _player?.Render(_renderer);
     }
 
-    public void RenderTerrain()
+    private void RenderTerrain()
     {
         foreach (var currentLayer in _currentLevel.Layers)
         {
@@ -138,19 +150,12 @@ public class Engine
                 for (int j = 0; j < _currentLevel.Height; ++j)
                 {
                     int? dataIndex = j * currentLayer.Width + i;
-                    if (dataIndex == null)
-                    {
-                        continue;
-                    }
+                    if (dataIndex == null) continue;
 
                     var currentTileId = currentLayer.Data[dataIndex.Value] - 1;
-                    if (currentTileId == null)
-                    {
-                        continue;
-                    }
+                    if (currentTileId == null) continue;
 
                     var currentTile = _tileIdMap[currentTileId.Value];
-
                     var tileWidth = currentTile.ImageWidth ?? 0;
                     var tileHeight = currentTile.ImageHeight ?? 0;
 
@@ -162,7 +167,7 @@ public class Engine
         }
     }
 
-    public IEnumerable<RenderableGameObject> GetRenderables()
+    private IEnumerable<RenderableGameObject> GetRenderables()
     {
         foreach (var gameObject in _gameObjects.Values)
         {
@@ -177,37 +182,56 @@ public class Engine
     {
         var worldCoords = _renderer.ToWorldCoordinates(screenX, screenY);
 
-        SpriteSheet spriteSheet = SpriteSheet.Load(_renderer, "BombExploding.json", "Assets");
-        spriteSheet.ActivateAnimation("Explode");
+        var bombSprite = SpriteSheet.Load(_renderer, "BombExploding.json", "Assets");
+        bombSprite.ActivateAnimation("Explode");
 
-        TemporaryGameObject bomb = new(spriteSheet, 2.1, (worldCoords.X, worldCoords.Y));
+        var bomb = new TemporaryGameObject(bombSprite, 2.1, (worldCoords.X, worldCoords.Y));
         _gameObjects.Add(bomb.Id, bomb);
+
+        int explosionRadius = 80;
+
+        var housesToRemove = _houses.Where(h =>
+            RectsOverlap(worldCoords.X - explosionRadius / 2, worldCoords.Y - explosionRadius / 2,
+                         explosionRadius, explosionRadius,
+                         h.Position.X, h.Position.Y, h.Width, h.Height)).ToList();
+
+        foreach (var house in housesToRemove)
+        {
+            var expireTime = DateTimeOffset.Now.AddSeconds(2.1); // delay until bomb ends
+            _housesPendingRemoval.Add((house.Id, expireTime));
+        }
     }
 
-private void AddHouses()
-{
-    string[] houseFiles = {
-        "house_2.png", "house_3.png", "house_4.png",
-        "house_1.png", "house_5.png", "house_6.png"
-    };
-
-    int startX = 150;
-    int startY = 300;
-    int spacing = 10;
-
-    int currentX = startX;
-    foreach (string fileName in houseFiles)
+    private bool RectsOverlap(int x1, int y1, int w1, int h1, int x2, int y2, int w2, int h2)
     {
-        string fullPath = Path.Combine("Assets", fileName);
-        var textureId = _renderer.LoadTexture(fullPath, out var textureData);
-
-        var house = new StaticGameObject(textureId, currentX, startY, textureData.Width, textureData.Height);
-        _gameObjects.Add(house.Id, house);
-
-        currentX += textureData.Width + spacing;
+        return x1 < x2 + w2 &&
+               x1 + w1 > x2 &&
+               y1 < y2 + h2 &&
+               y1 + h1 > y2;
     }
-}
 
+    private void AddHouses()
+    {
+        string[] houseFiles = {
+            "house_2.png", "house_3.png", "house_4.png",
+            "house_1.png", "house_5.png", "house_6.png"
+        };
 
+        int startX = 150;
+        int startY = 300;
+        int spacing = 10;
 
+        int currentX = startX;
+        foreach (string fileName in houseFiles)
+        {
+            string fullPath = Path.Combine("Assets", fileName);
+            var textureId = _renderer.LoadTexture(fullPath, out var textureData);
+
+            var house = new StaticGameObject(textureId, currentX, startY, textureData.Width, textureData.Height);
+            _gameObjects.Add(house.Id, house);
+            _houses.Add(house);
+
+            currentX += textureData.Width + spacing;
+        }
+    }
 }
